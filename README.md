@@ -1,7 +1,7 @@
 # ebi-tools-api
 Utility module to query the EBI Tools REST API
 
-Only BLASTp endpoint is implemented, but the codebase may be useful to add other endpoints easily.
+Only BLASTp and Needle endpoints are implemented, but the codebase may be useful to add other endpoints easily.
 
 ### Install
 

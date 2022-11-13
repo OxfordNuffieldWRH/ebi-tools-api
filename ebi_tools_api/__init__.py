@@ -25,11 +25,11 @@ graphics_wrappers = {
 }
 
 protein_evidence_of_existence = {
-    '1': '1. Experimental evidence at protein level',
-    '2': '2. Experimental evidence at transcript level',
-    '3': '3. Protein inferred from homology',
-    '4': '4. Protein predicted',
-    '5': '5. Protein uncertain'
+    1: '1. Experimental evidence at protein level',
+    2: '2. Experimental evidence at transcript level',
+    3: '3. Protein inferred from homology',
+    4: '4. Protein predicted',
+    5: '5. Protein uncertain'
 }
 
 
@@ -64,79 +64,17 @@ def disk_cached(func):
 
 
 @dataclass
-class BlastResult:
+class Result:
     job_id: str
-    tool: str = 'ncbiblast'
+    tool: str
     server: str = 'https://www.ebi.ac.uk/Tools/services/rest'
-    image_format: Literal['svg', 'png', 'jpg'] = 'svg'
     cache_dir: Path = Path('.ebi_tools_cache')
 
-    @property
-    def hits(self) -> DataFrame:
-        df = DataFrame(self.data['hits'])
-        if df.empty:
-          return df
-        return df.set_index('hit_num')
-
-    def hits_simple(self) -> DataFrame:
-        def extract(df):
-            return df.apply(
-                lambda row: one(row.hit_hsps, row.hit_acc),
-                axis=1
-            )
-
-        return (
-            self.hits
-            .assign(single_sps=extract)
-            .assign(
-                existence=lambda df: df.hit_uni_pe.map(protein_evidence_of_existence),
-                database=lambda df: df.hit_db.map({
-                    'SP': 'Swiss-Prot (Reviewed)',
-                    'TR': 'TrEMBL (Unreviewed)'
-                }),
-                uniprot_link=lambda df: ('<a href="' + df.hit_url + '" target="_blank">' + df.hit_acc + '</a>'),
-                identity=lambda df: df.single_sps.apply(lambda row: row['hsp_identity']),
-                e_value=lambda df: df.single_sps.apply(lambda row: row['hsp_expect'])
-            )
-            .drop(columns=[
-                'single_sps',
-                'hit_def', 'hit_hsps', 'hit_desc',
-                'hit_xref_url', 'hit_url',
-                'hit_uni_ox', 'hit_db',
-                'hit_uni_pe'
-            ])
-            .rename(columns=lambda column: column.replace('hit_', ''))
-            .rename(columns={
-                'uni_de': 'description',
-                'uni_os': 'species',
-                'uni_gn': 'gene_name',
-                'uni_sv': 'sequence_version',
-                'len': 'length',
-                'acc': 'accession',
-                'id': 'identifier'
-            })
-            .rename_axis(index=None)
+    def result_types(self, **kwargs):
+        return requests.get(
+            f'{self.server}/{self.tool}/resulttypes/{self.job_id}',
+            **kwargs
         )
-
-    @property
-    def program(self):
-        return self.data['program']
-
-    @property
-    def version(self):
-        return self.data['version']
-
-    @cached_property
-    def data(self) -> dict:
-        return loads(self._get('json').text)
-
-    @cached_property
-    def visual(self) -> Union[SVG, Image]:
-        return self._wrap_image(self._get(f'visual-{self.image_format}').content)
-
-    @cached_property
-    def fast_family_and_domain_prediction(self) -> Union[SVG, Image]:
-        return self._wrap_image(self._get(f'ffdp-subject-{self.image_format}').content)
 
     def _get(self, output: str, **kwargs):
         return self._get_cached(
@@ -154,6 +92,93 @@ class BlastResult:
                 **kwargs
             )
         )
+
+
+@dataclass
+class JSONResult(Result):
+
+    @property
+    def program(self):
+        return self.data['program']
+
+    @property
+    def version(self):
+        return self.data['version']
+
+    @cached_property
+    def data(self) -> dict:
+        return loads(self._get('json').text)
+
+
+@dataclass
+class BlastResult(JSONResult):
+    job_id: str
+    tool: str = 'ncbiblast'
+    image_format: Literal['svg', 'png', 'jpg'] = 'svg'
+
+    @property
+    def hits(self) -> DataFrame:
+        df = DataFrame(self.data['hits'])
+        if df.empty:
+          return df
+        return df.set_index('hit_num')
+
+    @staticmethod
+    def simplify(hits: DataFrame) -> DataFrame:
+        return (
+            hits
+            .assign(
+                existence=lambda df: df.hit_uni_pe.map(int).map(protein_evidence_of_existence),
+                database=lambda df: df.hit_db.map({
+                    'SP': 'Swiss-Prot (Reviewed)',
+                    'TR': 'TrEMBL (Unreviewed)'
+                }),
+                uniprot_link=lambda df: ('<a href="' + df.hit_url + '" target="_blank">' + df.hit_acc + '</a>')
+            )
+            .drop(columns=[
+                'hit_def', 'hit_hsps', 'hit_desc',
+                'hit_xref_url', 'hit_url',
+                'hit_uni_ox', 'hit_db',
+                'hit_uni_pe'
+            ])
+            .rename(columns=lambda column: column.replace('hit_', ''))
+            .rename(columns={
+                'uni_de': 'description',
+                'uni_os': 'species',
+                'uni_gn': 'gene_name',
+                'uni_sv': 'sequence_version',
+                'len': 'length',
+                'acc': 'accession',
+                'id': 'identifier'
+            })
+        )
+
+    @staticmethod
+    def extract_local_alignment(
+        hits: DataFrame,
+        sort: str = 'hsp_expect',
+        ascending: bool = False
+    ):
+        return hits.apply(
+            lambda row: (
+                DataFrame(row.hit_hsps)
+                .sort_values(sort, ascending)
+                .rename(columns=lambda column: column.replace('hsp_', ''))
+                .iloc[0]
+            ),
+            axis=1
+        )
+
+    def hits_simple(self) -> DataFrame:
+      return self.simplify(self.hits)
+
+    @cached_property
+    def visual(self) -> Union[SVG, Image]:
+        return self._wrap_image(self._get(f'visual-{self.image_format}').content)
+
+    @cached_property
+    def fast_family_and_domain_prediction(self) -> Union[SVG, Image]:
+        return self._wrap_image(self._get(f'ffdp-subject-{self.image_format}').content)
 
     def _wrap_image(self, data):
         image_wrapper = graphics_wrappers[self.image_format]
@@ -185,6 +210,26 @@ class BlastResult:
         return f'<{self.version} with {len(self.hits)} results>'
 
 
+@dataclass
+class NeedleResult(Result):
+    job_id: str
+    tool: str = 'emboss_needle'
+
+    @property
+    def out(self) -> dict:
+        text = self._get('out').text
+        data = {}
+        for line in text.split('\n'):
+            if line.startswith('#') and ':' in line:
+                key, value = [x.strip() for x in line[1:].split(':', maxsplit=1)]
+                data[key] = value
+        return data
+
+    @property
+    def alignment(self) -> dict:
+        return self._get('aln').text
+
+
 EBI_HEADERS = {
     'Accept': 'text/plain',
     'Content-Type': 'application/x-www-form-urlencoded'
@@ -200,17 +245,35 @@ class EBITools:
     backoff_limit: int = 5
     verbose: bool = True
 
-    def blastp(self, exp='1e-10', **query) -> BlastResult:
+    def blastp(self, sequence, exp='1e-10', stype='protein', database='uniprotkb', **query) -> BlastResult:
         job_id = self._query_cached(
             endpoint='ncbiblast',
             program='blastp',
             task='blastp',
             exp=exp,
-            stype='protein',
-            database='uniprotkb',
+            stype=stype,
+            database=database,
+            sequence=sequence,
             **query
         )
         return BlastResult(
+            job_id=job_id,
+            server=self.server,
+            cache_dir=self.cache_dir
+        )
+
+    def needle(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> NeedleResult:
+        """EMBOSS Needle creates an optimal global sequence alignment of two input sequences using the Needleman-Wunsch alignment algorithm."""
+        job_id = self._query_cached(
+            endpoint='emboss_needle',
+            matrix=matrix,
+            stype=stype,
+            database=database,
+            asequence=asequence,
+            bsequence=bsequence,
+            **query
+        )
+        return NeedleResult(
             job_id=job_id,
             server=self.server,
             cache_dir=self.cache_dir
@@ -243,10 +306,10 @@ class EBITools:
                 .text
             )
             assert status in {'RUNNING', 'FINISHED'}, status
-            if verbose:
-              print('.', end='')
+            if self.verbose:
+                print('.', end='')
             if i < self.backoff_limit:
-              i += 1
+                i += 1
 
         return job_id
 
