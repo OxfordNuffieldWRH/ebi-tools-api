@@ -58,10 +58,10 @@ ebi = EBITools(email=my_email, cache_dir='some/path/to/cache/dir')
 
 ### Timeout
 
-After sending an initial query, the tool will check for the result every `i` seconds, where `i` increases by one after each failed attempt.
-By default 100 attempts will be made. This can be customised in the constructor:
+After sending an initial query, the tool will check for the result every `i` seconds, where `i` increases by one after each failed attempt,
+up to a configurable maximum interval (default 5 seconds). By default 100 attempts will be made. This can be customised in the constructor:
 
 
 ```python
-ebi = EBITools(email=my_email, attempts_threshold=20)
+ebi = EBITools(email=my_email, attempts_threshold=20, backoff_limit=10)
 ```

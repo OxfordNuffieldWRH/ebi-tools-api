@@ -34,20 +34,31 @@ protein_evidence_of_existence = {
 
 
 def disk_cached(func):
-    def wrapper(self, endpoint: str, **kwargs):
+    def wrapper(self, endpoint: str, cached_only=False, **kwargs):
+        kwargs = {
+          k: kwargs[k]
+          for k in sorted(kwargs)
+        }
         params_hash = hashlib.sha512(str(kwargs).encode()).hexdigest()
         cache_path: Path = self.cache_dir / endpoint / str(params_hash)
         if cache_path.exists():
             # print('Cached result found, loading from disk')
             with open(cache_path, 'rb') as f:
                 data = pickle.load(f)
-            return data
+            # guard against collisions
+            assert data['kwargs'] == kwargs
+            return data['result']
         else:
+            if cached_only:
+                raise Exception(f'Cached copy not found in {cache_path}')
             # print(f'{cache_path} not found fetching...')
             data = func(self, endpoint, **kwargs)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, 'wb') as f:
-                pickle.dump(data, f)
+                pickle.dump({
+                    'result': data,
+                    'kwargs': kwargs
+                }, f)
             return data
     return wrapper
 
@@ -62,7 +73,10 @@ class BlastResult:
 
     @property
     def hits(self) -> DataFrame:
-        return DataFrame(self.data['hits']).set_index('hit_num')
+        df = DataFrame(self.data['hits'])
+        if df.empty:
+          return df
+        return df.set_index('hit_num')
 
     def hits_simple(self) -> DataFrame:
         def extract(df):
@@ -182,7 +196,9 @@ class EBITools:
     email: str
     server: str = 'https://www.ebi.ac.uk/Tools/services/rest'
     cache_dir: Path = Path('.ebi_tools_cache')
-    attempts_threshold = 100
+    attempts_threshold: int = 100
+    backoff_limit: int = 5
+    verbose: bool = True
 
     def blastp(self, exp='1e-10', **query) -> BlastResult:
         job_id = self._query_cached(
@@ -227,8 +243,10 @@ class EBITools:
                 .text
             )
             assert status in {'RUNNING', 'FINISHED'}, status
-            print('.', end='')
-            i += 1
+            if verbose:
+              print('.', end='')
+            if i < self.backoff_limit:
+              i += 1
 
         return job_id
 
