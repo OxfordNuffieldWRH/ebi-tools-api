@@ -210,6 +210,15 @@ class BlastResult(JSONResult):
         return f'<{self.version} with {len(self.hits)} results>'
 
 
+def parse_needle_summary(text: str):
+    data = {}
+    for line in text.split('\n'):
+        if line.startswith('#') and ':' in line:
+            key, value = [x.strip() for x in line[1:].split(':', maxsplit=1)]
+            data[key] = value
+    return data
+
+
 @dataclass
 class NeedleResult(Result):
     job_id: str
@@ -218,16 +227,17 @@ class NeedleResult(Result):
     @property
     def out(self) -> dict:
         text = self._get('out').text
-        data = {}
-        for line in text.split('\n'):
-            if line.startswith('#') and ':' in line:
-                key, value = [x.strip() for x in line[1:].split(':', maxsplit=1)]
-                data[key] = value
-        return data
+        return parse_needle_summary(text)
 
     @property
     def alignment(self) -> dict:
         return self._get('aln').text
+
+
+@dataclass
+class StretcherResult(Result):
+    job_id: str
+    tool: str = 'emboss_stretcher'
 
 
 EBI_HEADERS = {
@@ -264,6 +274,10 @@ class EBITools:
 
     def needle(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> NeedleResult:
         """EMBOSS Needle creates an optimal global sequence alignment of two input sequences using the Needleman-Wunsch alignment algorithm."""
+        if not asequence:
+            raise ValueError('First sequence is missing')
+        if not bsequence:
+            raise ValueError('Second sequence is missing')
         job_id = self._query_cached(
             endpoint='emboss_needle',
             matrix=matrix,
@@ -279,6 +293,27 @@ class EBITools:
             cache_dir=self.cache_dir
         )
 
+    def stretcher(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> StretcherResult:
+        """EMBOSS Stretcher creates an optimal global sequence alignment of two input sequences using O(min(N, M)) space."""
+        if not asequence:
+            raise ValueError('First sequence is missing')
+        if not bsequence:
+            raise ValueError('Second sequence is missing')
+        job_id = self._query_cached(
+            endpoint='emboss_stretcher',
+            matrix=matrix,
+            stype=stype,
+            database=database,
+            asequence=asequence,
+            bsequence=bsequence,
+            **query
+        )
+        return StretcherResult(
+            job_id=job_id,
+            server=self.server,
+            cache_dir=self.cache_dir
+        )
+
     @disk_cached
     def _query_cached(self, endpoint: str, **query) -> str:
         params = {'email': self.email, **query}
@@ -288,7 +323,7 @@ class EBITools:
             headers=EBI_HEADERS
         )
         if query.status_code != 200:
-            raise ValueError(query.content)
+            raise ValueError(f'Status code: {query.status_code}, content: {query.content}')
         job_id = query.text
 
         status = None
