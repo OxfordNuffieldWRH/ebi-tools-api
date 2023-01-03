@@ -7,7 +7,7 @@ from pathlib import Path
 import pickle
 import hashlib
 
-from pandas import DataFrame
+from pandas import DataFrame, isnull
 from IPython.display import SVG, Image, display
 import requests
 
@@ -110,6 +110,12 @@ class JSONResult(Result):
         return loads(self._get('json').text)
 
 
+def _int_or_none(x):
+    if isnull(x):
+        return None
+    return int(x)
+
+
 @dataclass
 class BlastResult(JSONResult):
     job_id: str
@@ -128,7 +134,7 @@ class BlastResult(JSONResult):
         return (
             hits
             .assign(
-                existence=lambda df: df.hit_uni_pe.map(int).map(protein_evidence_of_existence),
+                existence=lambda df: df.hit_uni_pe.map(_int_or_none).map(protein_evidence_of_existence),
                 database=lambda df: df.hit_db.map({
                     'SP': 'Swiss-Prot (Reviewed)',
                     'TR': 'TrEMBL (Unreviewed)'
@@ -163,11 +169,10 @@ class BlastResult(JSONResult):
             lambda row: (
                 DataFrame(row.hit_hsps)
                 .sort_values(sort, ascending)
-                .rename(columns=lambda column: column.replace('hsp_', ''))
                 .iloc[0]
             ),
             axis=1
-        )
+        ).rename(columns=lambda column: column.replace('hsp_', ''))
 
     def hits_simple(self) -> DataFrame:
       return self.simplify(self.hits)
