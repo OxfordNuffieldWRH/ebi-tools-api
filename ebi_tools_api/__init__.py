@@ -1,9 +1,9 @@
-from typing import Literal, Union
+from typing import Literal, Union, Callable, Coroutine
 from dataclasses import dataclass
 from functools import cached_property, partial
-from time import sleep
 from json import loads
 from pathlib import Path
+import asyncio
 import pickle
 import hashlib
 
@@ -32,34 +32,79 @@ protein_evidence_of_existence = {
     5: '5. Protein uncertain'
 }
 
+from contextlib import contextmanager
 
-def disk_cached(func):
+class CacheResource:
+    def __init__(self):
+       self.result = None
+
+    def set_result(self, result):
+       self.result = result
+
+
+@contextmanager
+def disk_cache(self, endpoint: str, cached_only=False, **kwargs):
+    reset_cache = kwargs.pop('reset_cache', False)
+    verbose = kwargs.pop('verbose', False)
+    kwargs = {
+      k: kwargs[k]
+      for k in sorted(kwargs)
+    }
+    params_hash = hashlib.sha512(str(kwargs).encode()).hexdigest()
+    label = params_hash  # TODO: find a better way?
+    cache_path: Path = self.cache_dir / endpoint / str(params_hash)
+    if verbose and reset_cache:
+        print(
+            f'Reseting cache for {label} as requested'
+            if cache_path.exists() else
+            f'Cache reset for {label} requested but there was no cache'
+        )
+    resource = CacheResource()
+    if cache_path.exists() and not reset_cache:
+        if verbose:
+            print(f'Cached result found for {label}, loading from disk')
+        with open(cache_path, 'rb') as f:
+            data = pickle.load(f)
+        # guard against collisions
+        assert data['kwargs'] == kwargs
+        resource.set_result(data['result'])
+        yield resource
+    else:
+        if cached_only:
+            raise Exception(f'Cached copy not found in {cache_path}')
+        if verbose:
+            print(f'{cache_path} not found fetching...')
+        yield resource
+        data = resource.result
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, 'wb') as f:
+            pickle.dump({
+                'result': data,
+                'kwargs': kwargs
+            }, f)
+
+
+def disk_cached(func: Callable[..., Coroutine]):
+    async def wrapper(self, endpoint: str, cached_only=False, **kwargs):
+        with disk_cache(self, endpoint, cached_only, **kwargs) as cache_resource:
+            if cache_resource.result:
+                return cache_resource.result
+            else:
+                data = await func(self, endpoint, **kwargs)
+                cache_resource.set_result(data)
+                return data
+    return wrapper
+
+
+def disk_cached_sync(func: Callable):
     def wrapper(self, endpoint: str, cached_only=False, **kwargs):
-        kwargs = {
-          k: kwargs[k]
-          for k in sorted(kwargs)
-        }
-        params_hash = hashlib.sha512(str(kwargs).encode()).hexdigest()
-        cache_path: Path = self.cache_dir / endpoint / str(params_hash)
-        if cache_path.exists():
-            # print('Cached result found, loading from disk')
-            with open(cache_path, 'rb') as f:
-                data = pickle.load(f)
-            # guard against collisions
-            assert data['kwargs'] == kwargs
-            return data['result']
-        else:
-            if cached_only:
-                raise Exception(f'Cached copy not found in {cache_path}')
-            # print(f'{cache_path} not found fetching...')
-            data = func(self, endpoint, **kwargs)
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, 'wb') as f:
-                pickle.dump({
-                    'result': data,
-                    'kwargs': kwargs
-                }, f)
-            return data
+        with disk_cache(self, endpoint, cached_only, **kwargs) as cache_resource:
+            if cache_resource.result:
+                return cache_resource.result
+            else:
+                data = func(self, endpoint, **kwargs)
+                cache_resource.set_result(data)
+                return data
     return wrapper
 
 
@@ -84,7 +129,7 @@ class Result:
             **kwargs
         )
 
-    @disk_cached
+    @disk_cached_sync
     def _get_cached(self, endpoint: str, output: str, job_id: str, **kwargs):
         return (
             requests.get(
@@ -256,12 +301,12 @@ class EBITools:
     email: str
     server: str = 'https://www.ebi.ac.uk/Tools/services/rest'
     cache_dir: Path = Path('.ebi_tools_cache')
-    attempts_threshold: int = 100
-    backoff_limit: int = 5
+    attempts_threshold: int = 50
+    backoff_limit: int = 10
     verbose: bool = True
 
-    def blastp(self, sequence, exp='1e-10', stype='protein', database='uniprotkb', **query) -> BlastResult:
-        job_id = self._query_cached(
+    async def blastp(self, sequence, exp='1e-10', stype='protein', database='uniprotkb', **query) -> BlastResult:
+        job_id = await self._query_cached(
             endpoint='ncbiblast',
             program='blastp',
             task='blastp',
@@ -277,13 +322,13 @@ class EBITools:
             cache_dir=self.cache_dir
         )
 
-    def needle(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> NeedleResult:
+    async def needle(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> NeedleResult:
         """EMBOSS Needle creates an optimal global sequence alignment of two input sequences using the Needleman-Wunsch alignment algorithm."""
         if not asequence:
             raise ValueError('First sequence is missing')
         if not bsequence:
             raise ValueError('Second sequence is missing')
-        job_id = self._query_cached(
+        job_id = await self._query_cached(
             endpoint='emboss_needle',
             matrix=matrix,
             stype=stype,
@@ -298,13 +343,13 @@ class EBITools:
             cache_dir=self.cache_dir
         )
 
-    def stretcher(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> StretcherResult:
+    async def stretcher(self, asequence, bsequence, matrix='EBLOSUM62', stype='protein', database='uniprotkb', **query) -> StretcherResult:
         """EMBOSS Stretcher creates an optimal global sequence alignment of two input sequences using O(min(N, M)) space."""
         if not asequence:
             raise ValueError('First sequence is missing')
         if not bsequence:
             raise ValueError('Second sequence is missing')
-        job_id = self._query_cached(
+        job_id = await self._query_cached(
             endpoint='emboss_stretcher',
             matrix=matrix,
             stype=stype,
@@ -320,7 +365,7 @@ class EBITools:
         )
 
     @disk_cached
-    def _query_cached(self, endpoint: str, **query) -> str:
+    async def _query_cached(self, endpoint: str, **query) -> str:
         params = {'email': self.email, **query}
         query = requests.post(
             f'{self.server}/{endpoint}/run',
@@ -337,7 +382,7 @@ class EBITools:
         while status != 'FINISHED':
             if i > self.attempts_threshold:
                 raise Exception(f'Not finished at {self.attempts_threshold}th attempt')
-            sleep(i)
+            await asyncio.sleep(i)
             status = (
                 requests.get(
                     f'{self.server}/{endpoint}/status/{job_id}',

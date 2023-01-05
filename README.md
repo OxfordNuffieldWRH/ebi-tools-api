@@ -1,5 +1,5 @@
 # ebi-tools-api
-Utility module to query the EBI Tools REST API
+Utility module to asynchronously query the EBI Tools REST API
 
 Only BLASTp and Needle endpoints are implemented, but the codebase may be useful to add other endpoints easily.
 
@@ -20,7 +20,7 @@ ebi = EBITools(email='your@email.com')
 mouse_taxonomy_id = 10090
 human_il6 = 'MNSFSTSAFGPVAFSLGLLLVLPAAFPAPVPPGEDSKDVAAPHRQPLTSSERIDKQIRYILDGISALRKETCNKSNMCESSKEALAENNLNLPKMAEKDGCFQSGFNEETCLVKIITGLLEFEVYLEYLQNRFESSEEQARAVQMSTKVLIQFLQKKAKNLDAITTPDPTTNASLLTKLQAQNQWLQDMTTHLILRSFKEFLQSSLRALRQM'
 
-result = ebi.blastp(
+result = await ebi.blastp(
     sequence=human_il6,
     title='Search for human IL6 homologues in mouse',
     taxids=mouse_taxonomy_id
@@ -50,7 +50,13 @@ result.summarize()
 ### Caching
 
 By default the results will be cached on disk in `.ebi_tools_cache` to minimise traffic to EBI tools.
-To clear cache, remove the contents of this hidden directory. You can change the path to cache in `EBITools` constructor:
+To clear cache, either:
+- pass `reset_cache=True` to a query function (e.g. `blastp(sequence=human_il6, reset_cache=True)` **preserving all other arguments as in original call**
+- remove the contents of this hidden directory to clear entire cache at once
+
+Pass `verbose=True` to see cache status.
+
+You can change the path to cache in `EBITools` constructor:
 
 ```python
 ebi = EBITools(email=my_email, cache_dir='some/path/to/cache/dir')
